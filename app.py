@@ -37,6 +37,23 @@ except ImportError:
     BH1750_AVAILABLE = False
     print("⚠️ BH1750 libraries not available")
 
+# Check if we're running on actual Raspberry Pi hardware
+def is_raspberry_pi():
+    """Check if running on actual Raspberry Pi hardware"""
+    try:
+        with open('/proc/cpuinfo', 'r') as f:
+            return 'Raspberry Pi' in f.read()
+    except:
+        return False
+
+# Set simulation mode if not on actual hardware
+SIMULATION_MODE = not is_raspberry_pi()
+if SIMULATION_MODE:
+    print("🖥️ Running in simulation mode (not on actual Raspberry Pi hardware)")
+    GPIO_AVAILABLE = False
+    SCD40_AVAILABLE = False
+    BH1750_AVAILABLE = False
+
 # Import configuration
 from config import GPIO_CONFIG, MUSHROOM_CONFIG, SENSOR_CONFIG
 
@@ -178,8 +195,11 @@ class DatabaseService:
         except Exception as e:
             print(f"❌ Local MongoDB setup failed: {e}")
             print("💡 Make sure MongoDB is installed and running locally")
+            print("🎭 Using in-memory storage for simulation")
             self.local_mongo_client = None
             self.local_mongo_db = None
+            # Use in-memory storage for simulation
+            self.simulation_data = []
             
     def connect_atlas(self):
         """Connect to MongoDB Atlas"""
@@ -274,15 +294,22 @@ class DatabaseService:
                 
                 return str(result.inserted_id)
             else:
-                print("❌ No local MongoDB available")
-                return None
+                # Use in-memory storage for simulation
+                if hasattr(self, 'simulation_data'):
+                    data['_id'] = len(self.simulation_data) + 1
+                    self.simulation_data.append(data)
+                    print(f"📦 Saved to simulation storage: {data['_id']}")
+                    return str(data['_id'])
+                else:
+                    print("❌ No storage available")
+                    return None
                 
         except Exception as e:
             print(f"❌ Save error: {e}")
             return None
 
     def get_latest_readings(self, limit=10):
-        """Get latest readings from local MongoDB"""
+        """Get latest readings from local MongoDB or simulation storage"""
         try:
             if self.local_mongo_db:
                 cursor = self.local_mongo_db.readings.find({
@@ -298,8 +325,17 @@ class DatabaseService:
                 
                 print(f"📊 Retrieved {len(readings)} readings from local MongoDB")
                 return readings
+            elif hasattr(self, 'simulation_data'):
+                # Return from simulation storage
+                readings = sorted(self.simulation_data, key=lambda x: x['server_timestamp'], reverse=True)[:limit]
+                for doc in readings:
+                    doc['_id'] = str(doc['_id'])
+                    if isinstance(doc.get('server_timestamp'), datetime):
+                        doc['server_timestamp'] = doc['server_timestamp'].isoformat()
+                print(f"📊 Retrieved {len(readings)} readings from simulation storage")
+                return readings
             else:
-                print("❌ No local MongoDB available")
+                print("❌ No storage available")
                 return []
                 
         except Exception as e:
@@ -334,10 +370,17 @@ class DatabaseService:
 
     def get_database_status(self):
         """Get current database status"""
+        if hasattr(self, 'simulation_data'):
+            db_type = 'Simulation Storage'
+        elif self.using_atlas:
+            db_type = 'MongoDB Atlas'
+        else:
+            db_type = 'Local MongoDB'
+            
         return {
-            'local_mongodb': self.local_mongo_db is not None,
+            'local_mongodb': self.local_mongo_db is not None or hasattr(self, 'simulation_data'),
             'atlas_connected': self.using_atlas,
-            'database_type': 'MongoDB Atlas' if self.using_atlas else 'Local MongoDB',
+            'database_type': db_type,
             'offline_mode': not self.using_atlas
         }
 
@@ -357,8 +400,25 @@ class GPIOControlService:
         
     def setup_gpio(self):
         """Initialize GPIO pins using GPIO Zero"""
-        if not GPIO_AVAILABLE:
-            print("⚠️ GPIO not available - using simulation mode")
+        if not GPIO_AVAILABLE or SIMULATION_MODE:
+            print("🎭 GPIO simulation mode - no actual hardware control")
+            # Create dummy devices for simulation
+            self.fogger = type('DummyDevice', (), {'on': lambda *args: print("🌫️ Fogger ON (simulated)"), 'off': lambda *args: print("🌫️ Fogger OFF (simulated)")})()
+            self.fan = type('DummyDevice', (), {'on': lambda *args: print("🌬️ Fan ON (simulated)"), 'off': lambda *args: print("🌬️ Fan OFF (simulated)")})()
+            self.heater = type('DummyDevice', (), {'on': lambda *args: print("🔥 Heater ON (simulated)"), 'off': lambda *args: print("🔥 Heater OFF (simulated)")})()
+            self.lights = type('DummyDevice', (), {'on': lambda *args: print("💡 Lights ON (simulated)"), 'off': lambda *args: print("💡 Lights OFF (simulated)")})()
+            
+            # Dummy LEDs
+            self.status_led_green = type('DummyLED', (), {'on': lambda *args: None, 'off': lambda *args: None})()
+            self.status_led_red = type('DummyLED', (), {'on': lambda *args: None, 'off': lambda *args: None})()
+            self.status_led_blue = type('DummyLED', (), {'on': lambda *args: None, 'off': lambda *args: None})()
+            
+            # Set status LED to green (system OK)
+            self.status_led_green.on()
+            self.status_led_red.off()
+            self.status_led_blue.off()
+            
+            print("✅ GPIO simulation devices initialized")
             return
             
         try:
@@ -390,7 +450,7 @@ class GPIOControlService:
     
     def control_fogger(self, activate=True, duration=None):
         """Control the fogger"""
-        if not GPIO_AVAILABLE:
+        if not GPIO_AVAILABLE or SIMULATION_MODE:
             self.fogger_active = activate
             print(f"🌫️ Fogger {'activated' if activate else 'deactivated'} (simulation)")
             return
@@ -413,7 +473,7 @@ class GPIOControlService:
     
     def control_fan(self, speed_percent=0):
         """Control exhaust fan speed (0-100%)"""
-        if not GPIO_AVAILABLE:
+        if not GPIO_AVAILABLE or SIMULATION_MODE:
             self.fan_speed = speed_percent
             print(f"🌬️ Fan speed set to {speed_percent}% (simulation)")
             return
@@ -431,7 +491,7 @@ class GPIOControlService:
     
     def control_lights(self, activate=True):
         """Control LED grow lights"""
-        if not GPIO_AVAILABLE:
+        if not GPIO_AVAILABLE or SIMULATION_MODE:
             self.lights_active = activate
             print(f"💡 Lights {'activated' if activate else 'deactivated'} (simulation)")
             return
@@ -578,9 +638,48 @@ class SensorService:
             return round(percentage, 1)
     
     def read_sensors(self):
-        """Read data from actual GPIO sensors"""
+        """Read data from actual GPIO sensors or generate simulated data"""
         data = self.current_data.copy()
         
+        if SIMULATION_MODE:
+            # Generate simulated sensor data
+            import random
+            import math
+            
+            # Simulate realistic sensor readings with some variation
+            base_time = time.time()
+            
+            # Temperature: 18-24°C with daily cycle
+            temp_variation = math.sin(base_time / 86400) * 2  # Daily cycle
+            data['temperature'] = round(21 + temp_variation + random.uniform(-0.5, 0.5), 1)
+            
+            # Humidity: 70-95% with some variation
+            humidity_variation = math.sin(base_time / 43200) * 5  # 12-hour cycle
+            data['humidity'] = round(82.5 + humidity_variation + random.uniform(-2, 2), 1)
+            
+            # CO2: 400-1200 ppm with gradual changes
+            co2_variation = math.sin(base_time / 3600) * 200  # Hourly cycle
+            data['co2'] = int(800 + co2_variation + random.uniform(-50, 50))
+            
+            # Light: 200-800 lux with day/night cycle
+            current_hour = datetime.now().hour
+            if 6 <= current_hour <= 18:  # Daytime
+                light_variation = math.sin((current_hour - 6) * math.pi / 12) * 300
+                data['light_intensity'] = int(500 + light_variation + random.uniform(-50, 50))
+            else:  # Nighttime
+                data['light_intensity'] = int(random.uniform(0, 50))
+            
+            # Water level: 60-90% with gradual decrease
+            water_variation = math.sin(base_time / 7200) * 10  # 2-hour cycle
+            data['water_level'] = round(75 + water_variation + random.uniform(-2, 2), 1)
+            
+            # Update timestamp
+            data['timestamp'] = datetime.utcnow().isoformat()
+            
+            print(f"🎭 Simulation mode: T={data['temperature']}°C, H={data['humidity']}%, CO2={data['co2']}ppm, Light={data['light_intensity']}, Water={data['water_level']}%")
+            return data
+        
+        # Real sensor reading code
         try:
             # Read SCD40 (temperature, humidity, CO2)
             if hasattr(self, 'scd40') and self.scd40:
@@ -960,16 +1059,16 @@ def main():
     # Auto-open browser
     def open_browser():
         time.sleep(2)  # Wait for server to start
-        webbrowser.open('http://localhost:5000')
+        webbrowser.open('http://localhost:8080')
     
     threading.Thread(target=open_browser, daemon=True).start()
     
     # Start web server
     try:
-        print("🌐 Web server running at http://localhost:5000")
+        print("🌐 Web server running at http://localhost:8080")
         print("🔐 Default password: admin123 (change in .env file)")
         print("🌍 Opening browser automatically...")
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+        socketio.run(app, host='0.0.0.0', port=8080, debug=False, use_reloader=False)
     except KeyboardInterrupt:
         print("🛑 Server stopped")
         print("🧹 GPIO Zero will automatically cleanup")
