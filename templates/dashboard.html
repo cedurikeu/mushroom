@@ -368,6 +368,26 @@
             </table>
         </div>
 
+        <!-- Debug Section -->
+        <div class="debug-section" style="margin-top: 2rem; padding: 1rem; background: rgba(255,255,255,0.1); border-radius: 10px;">
+            <h2 class="chart-title">🔧 Debug Information</h2>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+                <div>
+                    <h3>Sensor Status</h3>
+                    <div id="sensor-debug">Loading...</div>
+                </div>
+                <div>
+                    <h3>Database Status</h3>
+                    <div id="db-debug">Loading...</div>
+                </div>
+                <div>
+                    <h3>Quick Actions</h3>
+                    <button onclick="testSensors()" style="margin: 0.5rem; padding: 0.5rem 1rem; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">Test Sensors</button>
+                    <button onclick="forceReading()" style="margin: 0.5rem; padding: 0.5rem 1rem; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer;">Force Reading</button>
+                </div>
+            </div>
+        </div>
+
         <div class="last-updated">
             Last updated: <span id="last-updated">Never</span>
         </div>
@@ -703,11 +723,23 @@
                         atlasStatus.className = 'atlas-indicator atlas-offline';
                     }
                     
+                    // Update debug section
+                    document.getElementById('db-debug').innerHTML = `
+                        <div>Database: ${data.database}</div>
+                        <div>Connected: ${data.connected ? '✅' : '❌'}</div>
+                        <div>Atlas: ${data.atlas_connected ? '✅' : '❌'}</div>
+                        <div>Offline Mode: ${data.offline_mode ? '✅' : '❌'}</div>
+                        <div>Device ID: ${data.device_id}</div>
+                    `;
+                    
                     if (data.controls) {
                         updateControlsDisplay(data.controls);
                     }
                 })
-                .catch(error => console.error('Error loading status:', error));
+                .catch(error => {
+                    console.error('Error loading status:', error);
+                    document.getElementById('db-debug').innerHTML = `Error: ${error}`;
+                });
         }
         
         // Control functions
@@ -761,12 +793,56 @@
         
 
 
+        // Debug functions
+        function testSensors() {
+            fetch('/debug/sensors')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const sensorStatus = data.sensor_status;
+                        document.getElementById('sensor-debug').innerHTML = `
+                            <div>SCD40: ${sensorStatus.scd40_available ? '✅' : '❌'}</div>
+                            <div>BH1750: ${sensorStatus.bh1750_available ? '✅' : '❌'}</div>
+                            <div>Water Sensor: ${sensorStatus.water_sensor_available ? '✅' : '❌'}</div>
+                            <div>GPIO Available: ${sensorStatus.gpio_available ? '✅' : '❌'}</div>
+                            <div>Current Data: ${JSON.stringify(sensorStatus.current_data, null, 2)}</div>
+                        `;
+                    } else {
+                        document.getElementById('sensor-debug').innerHTML = `Error: ${data.error}`;
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('sensor-debug').innerHTML = `Error: ${error}`;
+                });
+        }
+
+        function forceReading() {
+            fetch('/debug/read-sensors')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('sensor-debug').innerHTML = `
+                            <div>Forced Reading:</div>
+                            <div>${JSON.stringify(data.sensor_data, null, 2)}</div>
+                        `;
+                        // Update the display with new data
+                        updateSensorDisplay(data.sensor_data);
+                    } else {
+                        document.getElementById('sensor-debug').innerHTML = `Error: ${data.error}`;
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('sensor-debug').innerHTML = `Error: ${error}`;
+                });
+        }
+
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
             initChart();
             loadHistoricalData();
             loadRecentReadings();
             loadDatabaseStatus();
+            testSensors(); // Load initial sensor status
             
             // Refresh data every 30 seconds
             setInterval(() => {
